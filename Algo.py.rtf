@@ -1,0 +1,171 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 import os\
+import time\
+import math\
+import numpy as np\
+import pandas as pd\
+from dataclasses import dataclass\
+from datetime import datetime\
+import pytz\
+from dotenv import load_dotenv\
+\
+try:\
+    import alpaca_trade_api as tradeapi\
+except Exception:\
+    tradeapi = None\
+\
+# --- Config ---\
+SYMBOL = "SPY"              # what to trade\
+BAR_RESOLUTION = "1Min"     # "1Min", "5Min", "1Day"\
+START_EQUITY = 10_000.0\
+\
+FAST_MA = 20\
+SLOW_MA = 50\
+ATR_LEN = 14\
+STOP_MULT = 1.5\
+TP_MULT = 3.0\
+\
+MAX_RISK_PCT = 0.02\
+SLIPPAGE_BPS = 2\
+FEE_BPS = 2\
+DAILY_LOSS_CAP_PCT = 0.02\
+TZ = "America/New_York"\
+\
+# --- Utils ---\
+def atr(df, n=14):\
+    hl = df['high'] - df['low']\
+    hc = (df['high'] - df['close'].shift(1)).abs()\
+    lc = (df['low'] - df['close'].shift(1)).abs()\
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)\
+    return tr.rolling(n).mean()\
+\
+def sharpe(daily_returns):\
+    std = daily_returns.std()\
+    return (252**0.5) * daily_returns.mean() / std if std != 0 else 0\
+\
+def max_drawdown(curve):\
+    roll_max = curve.cummax()\
+    dd = curve / roll_max - 1\
+    return dd.min()\
+\
+def bps(x): return x / 10_000.0\
+def tz_now(): return datetime.now(pytz.timezone(TZ))\
+\
+# --- Backtest ---\
+def backtest(csv_path):\
+    df = pd.read_csv(csv_path, parse_dates=['time']).set_index('time').sort_index()\
+    df['ma_fast'] = df['close'].rolling(FAST_MA).mean()\
+    df['ma_slow'] = df['close'].rolling(SLOW_MA).mean()\
+    df['atr'] = atr(df, ATR_LEN)\
+    df['signal'] = np.where(df['ma_fast'] > df['ma_slow'], 1, 0)\
+    df['position'] = df['signal'].shift(1).fillna(0)\
+\
+    risk_dollars = START_EQUITY * MAX_RISK_PCT\
+    df['shares'] = (risk_dollars / (df['atr'] * STOP_MULT)).fillna(0).clip(lower=0).round()\
+\
+    df['ret'] = df['close'].pct_change().fillna(0)\
+    pos_change = df['position'].diff().fillna(df['position'])\
+    trade_cost = (pos_change.abs() > 0).astype(int) * (bps(SLIPPAGE_BPS) + bps(FEE_BPS))\
+\
+    gross = df['position'] * df['ret']\
+    net = gross - trade_cost * 2\
+    curve = (1 + net).cumprod() * START_EQUITY\
+\
+    daily_net = net.resample('1D').sum()\
+    stats = \{\
+        "CAGR": round((curve.iloc[-1]/START_EQUITY)**(252/len(df)) - 1, 4),\
+        "Sharpe": round(sharpe(daily_net), 2),\
+        "MaxDD": round(float(max_drawdown(curve)), 4),\
+        "Final Equity": round(float(curve.iloc[-1]), 2),\
+    \}\
+    print("=== BACKTEST RESULTS ===")\
+    for k, v in stats.items():\
+        print(f"\{k\}: \{v\}")\
+\
+# --- Live Trading ---\
+@dataclass\
+class LiveState:\
+    equity: float = START_EQUITY\
+    position_qty: int = 0\
+    avg_entry: float = 0.0\
+    stop_price: float = None\
+    tp_price: float = None\
+\
+def get_alpaca_api():\
+    load_dotenv()\
+    return tradeapi.REST(\
+        os.getenv("ALPACA_API_KEY_ID"),\
+        os.getenv("ALPACA_API_SECRET_KEY"),\
+        os.getenv("ALPACA_PAPER_BASE")\
+    )\
+\
+def get_recent_bars(api, symbol, timeframe="1Min", limit=300):\
+    barset = api.get_bars(symbol, timeframe, limit=limit)\
+    data = [\{"time": b.t, "open": b.o, "high": b.h, "low": b.l,\
+             "close": b.c, "volume": b.v\} for b in barset]\
+    df = pd.DataFrame(data).set_index("time").sort_index()\
+    return df\
+\
+def compute_signal(df):\
+    df['ma_fast'] = df['close'].rolling(FAST_MA).mean()\
+    df['ma_slow'] = df['close'].rolling(SLOW_MA).mean()\
+    df['atr'] = atr(df, ATR_LEN)\
+    sig = 1 if df['ma_fast'].iloc[-1] > df['ma_slow'].iloc[-1] else 0\
+    return sig, float(df['close'].iloc[-1]), float(df['atr'].iloc[-1])\
+\
+def live_paper_loop():\
+    api = get_alpaca_api()\
+    state = LiveState()\
+    print("Starting LIVE_PAPER...")\
+    while True:\
+        try:\
+            df = get_recent_bars(api, SYMBOL, BAR_RESOLUTION, limit=200)\
+            sig, last_close, last_atr = compute_signal(df)\
+            acct = api.get_account()\
+            equity_live = float(acct.equity)\
+            risk_dollars = equity_live * MAX_RISK_PCT\
+            shares = int(max(0, risk_dollars / (last_atr * STOP_MULT)))\
+\
+            # Entry\
+            if sig == 1 and state.position_qty == 0 and shares > 0:\
+                api.submit_order(symbol=SYMBOL, qty=shares, side="buy",\
+                                 type="market", time_in_force="day")\
+                print(f"Enter LONG \{SYMBOL\} x\{shares\} @ ~\{last_close\}")\
+                state.position_qty = shares\
+                state.avg_entry = last_close\
+                state.stop_price = last_close - STOP_MULT * last_atr\
+                state.tp_price = last_close + TP_MULT * last_atr\
+\
+            # Exit\
+            if state.position_qty > 0:\
+                if last_close <= state.stop_price or last_close >= state.tp_price or sig == 0:\
+                    api.submit_order(symbol=SYMBOL, qty=state.position_qty, side="sell",\
+                                     type="market", time_in_force="day")\
+                    print(f"Exit \{SYMBOL\} @ ~\{last_close\}")\
+                    state = LiveState(equity=equity_live)\
+\
+            time.sleep(60)  # run every minute\
+        except KeyboardInterrupt:\
+            print("Stopped.")\
+            break\
+\
+# --- Entrypoint ---\
+if __name__ == "__main__":\
+    import argparse\
+    parser = argparse.ArgumentParser()\
+    parser.add_argument("--mode", choices=["BACKTEST","LIVE_PAPER"], required=True)\
+    parser.add_argument("--csv", help="CSV path for backtest")\
+    args = parser.parse_args()\
+\
+    if args.mode == "BACKTEST":\
+        if not args.csv:\
+            raise SystemExit("Provide --csv for BACKTEST")\
+        backtest(args.csv)\
+    else:\
+        live_paper_loop()}
