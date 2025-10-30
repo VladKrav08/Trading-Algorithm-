@@ -1,34 +1,13 @@
-# Trading-Algorithm-
-📈 Trading Algorithm
+Brownian Motion Risk Model and Trading Framework
 
-This is an algorithmic trading system I created using Python.
-It demonstrates how to build, backtest, and run a trading strategy with live paper trading through Alpaca Markets.
+This repository contains a small, transparent Python project that explores how Brownian motion and simple technical rules can be used to study market behavior. It includes a basic GBM simulation module, a backtesting script, and optional paper trading through the Alpaca API. This project is for learning only. It is not investment advice.
 
+What this project includes
+	•	A Moving Average Crossover rule (20 vs 50)
+	•	ATR-based stop loss and take profit logic
+	•	Volatility scaled position sizing with fixed percentage risk per trade
+	•	Optional daily loss cap
+	•	Backtesting on CSV price data
+	•	Optional paper trading mode through Alpaca API
+	•	A Brownian motion module that demonstrates how randomness is modeled in finance
 
-🚀 Features
-	•	Moving Average Crossover strategy (MA 20 vs MA 50)
-	•	ATR-based stop-loss and take-profit logic
-	•	Volatility-adjusted position sizing (risk per trade = % of equity)
-	•	Daily loss cap to prevent large drawdowns
-	•	Backtesting mode (using CSV OHLCV data)
-	•	Live paper trading mode (via Alpaca API)
-
-🛠️ Setup
-	1.	Clone this repository
-	2.	Install dependencies:
- pip install pandas numpy matplotlib alpaca-trade-api python-dotenv pytz
-  3.	Create a .env file in the project root (do not commit real keys):
-  ALPACA_API_KEY_ID=YOUR_KEY
-  ALPACA_API_SECRET_KEY=YOUR_SECRET
-  ALPACA_PAPER_BASE=https://paper-api.alpaca.markets
-  4.	Prepare a CSV (for backtesting) with columns:
-  time,open,high,low,close,volume
-  Backtest
-  python algo.py --mode BACKTEST --csv data.csv
-  Live Paper Trading
-  python algo.py --mode LIVE_PAPER
-  📊 Example Metrics from Backtest
-	•	CAGR
-	•	Sharpe Ratio
-	•	Max Drawdown
-	•	Final Equity
